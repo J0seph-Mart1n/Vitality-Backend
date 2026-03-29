@@ -2,18 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
-	vision "cloud.google.com/go/vision/apiv1"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
-	// "github.com/tmc/langchaingo/llms"
-	// "github.com/tmc/langchaingo/llms/openai"
-	// "github.com/tmc/langchaingo/prompts"
+	"github.com/tmc/langchaingo/llms"
+	"github.com/tmc/langchaingo/llms/openai"
 )
 
 func main() {
@@ -48,62 +49,113 @@ func handleImageUpload(c *gin.Context) {
 	}
 	defer file.Close()
 
-	// 2. Extract Text using Google Cloud Vision
-	extractedText, err := extractTextFromImage(file)
+	// 2. Convert the image directly to a Base64 string
+	base64Image, err := encodeImageToBase64(file)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to extract text: " + err.Error()})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to encode image: " + err.Error()})
 		return
 	}
 
-	// Check if any text was found
-	if strings.TrimSpace(extractedText) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "No text could be found in the image"})
+	// 3. Send the Base64 image + Prompt directly to Groq (Llama 4 Scout)
+	analysisJSON, err := analyzeImageWithGroq(base64Image)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to analyze image: " + err.Error()})
 		return
 	}
 
-	// 3. Analyze the extracted text using LangChain and LLM
-	// analysisJSON, err := analyzeNutritionData(extractedText)
-	// if err != nil {
-	// 	c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to analyze text: " + err.Error()})
-	// 	return
-	// }
+	// 4. Safely parse the LLM's JSON to ensure it is 100% valid before sending it to the app
+	var parsedData map[string]interface{}
+	if err := json.Unmarshal([]byte(analysisJSON), &parsedData); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "LLM returned invalid JSON format", "raw_output": analysisJSON})
+		return
+	}
 
-	// 4. Send the JSON response back to the app
-	// Temporarily returning the raw text wrapped in a valid JSON object
-	c.JSON(http.StatusOK, gin.H{
-		"text": extractedText,
-		"benefits": []string{"(LLM Analysis not active yet)"},
-		"harmful_effects": []string{"(LLM Analysis not active yet)"},
-	})
+	// 5. Send the perfectly validated JSON back to the app!
+	c.JSON(http.StatusOK, parsedData)
 }
 
-// extractTextFromImage sends the image stream to Google Cloud Vision API
-func extractTextFromImage(file io.Reader) (string, error) {
+// encodeImageToBase64 reads the multipart file and returns a base64 string
+func encodeImageToBase64(file io.Reader) (string, error) {
+	bytes, err := io.ReadAll(file)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(bytes), nil
+}
+
+// analyzeImageWithGroq uses LangChainGo to hit Groq's Llama 4 Scout model
+func analyzeImageWithGroq(base64Image string) (string, error) {
 	ctx := context.Background()
+	apiKey := os.Getenv("GROQ_API_KEY")
 
-	// Creates a Google Vision client.
-	// (Ensure GOOGLE_APPLICATION_CREDENTIALS env var is set)
-	client, err := vision.NewImageAnnotatorClient(ctx)
+	// 1. Initialize the LangChainGo OpenAI client, but point it to Groq!
+	llm, err := openai.New(
+		openai.WithToken(apiKey),
+		openai.WithBaseURL("https://api.groq.com/openai/v1"),
+		openai.WithModel("meta-llama/llama-4-scout-17b-16e-instruct"), // Target the Groq Vision model
+	)
 	if err != nil {
-		return "", fmt.Errorf("failed to create vision client: %v", err)
+		return "", fmt.Errorf("failed to init groq client: %v", err)
 	}
-	defer client.Close()
 
-	// Create vision Image from the file reader
-	image, err := vision.NewImageFromReader(file)
+	// 2. Define the Prompt Instructions
+	promptText := `You are an expert nutritionist and health coach. 
+	Look at the attached image of a food's nutritional label. 
+	Analyze the ingredients and nutritional values, and provide the health benefits and harmful effects of consuming this product.
+
+	Instructions:
+	1. Read the image carefully to identify key ingredients and nutritional metrics (sugar, sodium, etc).
+	2. List the benefits.
+	3. List the harmful effects or warnings (e.g., high sugar, artificial preservatives).
+	4. Give an insight (summary) about the food item in 3-4 sentences.
+	5. Output your response STRICTLY as a valid JSON object. Do not use Markdown formatting blocks.
+	6. If the image is not a nutritional label, return an JSON object {'error': 'Give an error message on why it is not a nutritional label'}.
+	7. If the image is blurry or unreadable, return an JSON object {'error': 'Give an error message on why it is not readable'}.
+
+	Use the following JSON structure if the image follows 1-4 instructions:
+	{
+	"summary": "Short 1 sentence summary of the food item",
+	"benefits": ["benefit 1", "benefit 2"],
+	"harmful_effects": ["harmful effect 1", "harmful effect 2"]
+	}
+	
+	Use the following JSON structure if the image in under 6th and 7th instruction:
+	{
+	"error": "error message"	
+	}`
+
+	// 3. Create a Multimodal Message (Text + Image URL Data URI)
+	// We pass the Base64 string using the standard data URI format required by OpenAI-compatible endpoints
+	imageURI := fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
+
+	message :=[]llms.MessageContent{
+		{
+			Role: llms.ChatMessageTypeHuman,
+			Parts:[]llms.ContentPart{
+				llms.TextContent{Text: promptText},
+				llms.ImageURLContent{URL: imageURI},
+			},
+		},
+	}
+
+	// 4. Call the LLM
+	resp, err := llm.GenerateContent(ctx, message)
 	if err != nil {
-		return "", fmt.Errorf("failed to read image: %v", err)
+		return "", fmt.Errorf("llm generation failed: %v", err)
 	}
 
-	// Call Vision API to detect document text (optimized for dense text like labels)
-	annotation, err := client.DetectDocumentText(ctx, image, nil)
-	if err != nil {
-		return "", fmt.Errorf("vision API error: %v", err)
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("empty response from LLM")
 	}
 
-	if annotation == nil {
-		return "", nil
+	// 5. Extract just the JSON object from the LLM response
+	completion := resp.Choices[0].Content
+	startIndex := strings.Index(completion, "{")
+	endIndex := strings.LastIndex(completion, "}")
+	if startIndex != -1 && endIndex != -1 && endIndex > startIndex {
+		cleanedJSON := completion[startIndex : endIndex+1]
+		return cleanedJSON, nil
 	}
 
-	return annotation.Text, nil
+	return "", fmt.Errorf("LLM did not return a valid JSON object: %s", completion)
 }
