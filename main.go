@@ -111,12 +111,47 @@ func analyzeImageWithGroq(base64Image string) (string, error) {
 	5. Output your response STRICTLY as a valid JSON object. Do not use Markdown formatting blocks.
 	6. If the image is not a nutritional label, return an JSON object {'error': 'Give an error message on why it is not a nutritional label'}.
 	7. If the image is blurry or unreadable, return an JSON object {'error': 'Give an error message on why it is not readable'}.
+	8. If you are able to provide more benefits and harmful effects of the food item, provide them using the proper JSON object format.
+	9. If you are able to provide more or less nutritional facts than listed in the JSON object, provide them using the proper JSON object format.
+	10. Provide a health score from 0-100 based on the nutritional facts and analysis made from the food label. Also provide a sentence regarding the health score.
 
 	Use the following JSON structure if the image follows 1-4 instructions:
 	{
 	"summary": "Short 1 sentence summary of the food item",
-	"benefits": ["benefit 1", "benefit 2"],
-	"harmful_effects": ["harmful effect 1", "harmful effect 2"]
+	"benefits": 
+		{
+		"benefit 1":"A senctence regarding the benefit", 
+		"benefit 2":"A senctence regarding the benefit",
+		"benefit 3":"A senctence regarding the benefit",
+		},
+	"harmful_effects": 
+		{
+		"harmful effect 1":"A senctence regarding the harmful effect", 
+		"harmful effect 2":"A senctence regarding the harmful effect",
+		"harmful effect 3":"A senctence regarding the harmful effect",
+		},
+	"nutritional_facts":
+		{
+		"calories":"Amount in kcal (Ex. 200 kcal)",
+		"total_fat":"Amount in g (Ex. 10g)",
+		"saturated_fat":"Amount in g (Ex. 5g)",
+		"trans_fat":"Amount in g (Ex. 0g)",
+		"cholesterol":"Amount in mg (Ex. 20mg)",
+		"sodium":"Amount in mg (Ex. 100mg)",
+		"total_carbohydrate":"Amount in g (Ex. 20g)",
+		"dietary_fiber":"Amount in g (Ex. 5g)",
+		"sugars":"Amount in g (Ex. 10g)",
+		"protein":"Amount in g (Ex. 5g)",
+		"vitamin_d":"Amount in mg (Ex. 20mg)",
+		"calcium":"Amount in mg (Ex. 20mg)",
+		"iron":"Amount in mg (Ex. 20mg)",
+		"potassium":"Amount in mg (Ex. 20mg)",
+		},
+	"health_score": 
+		{
+		"score": "Score out of 100",
+		"sentence": "A sentence regarding the health score"
+		}
 	}
 	
 	Use the following JSON structure if the image in under 6th and 7th instruction:
