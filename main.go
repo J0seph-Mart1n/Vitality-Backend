@@ -114,7 +114,8 @@ func analyzeImageWithGroq(base64Image string) (string, error) {
 	8. If you are able to provide more benefits and harmful effects of the food item, provide them using the proper JSON object format.
 	9. If you are able to provide more or less nutritional facts than listed in the JSON object, provide them using the proper JSON object format.
 	10. Provide a health score from 0-100 based on the nutritional facts and analysis made from the food label. Also provide a sentence regarding the health score.
-
+	11. All the nutritional facts in the image label should be in the JSON object in the same format as the image label.
+	
 	Use the following JSON structure if the image follows 1-4 instructions:
 	{
 	"summary": "Short 1 sentence summary of the food item",
@@ -149,7 +150,7 @@ func analyzeImageWithGroq(base64Image string) (string, error) {
 		},
 	"health_score": 
 		{
-		"score": "Score out of 100",
+		"score": "Score from 1-100",
 		"sentence": "A sentence regarding the health score"
 		}
 	}
