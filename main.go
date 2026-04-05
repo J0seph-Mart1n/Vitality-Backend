@@ -11,33 +11,89 @@ import (
 	"os"
 	"strings"
 
+	firebase "firebase.google.com/go/v4"
+	"firebase.google.com/go/v4/auth"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/openai"
+	"google.golang.org/api/option"
 )
+
+// Global variable to hold the Firebase Auth Client
+var firebaseAuth *auth.Client
 
 func main() {
 	err := godotenv.Load()
 	if err != nil {
-		// It's good practice to just log a warning rather than crash,
-		// because in production (like Docker/Heroku/AWS), you might pass
-		// actual environment variables instead of using a .env file.
 		log.Println("Warning: Error loading .env file or .env file not found")
 	} else {
 		fmt.Println(".env file loaded successfully!")
 	}
 
-	// Create a new HTTP multiplexer (router)
-	// Initialize Gin router
+	// Initialize Firebase Auth
+	initFirebase()
+
 	r := gin.Default()
 
-	// Define the API route
-	r.POST("/analyze-label", handleImageUpload)
+	r.POST("/analyze-label", AuthMiddleware(), handleImageUpload)
 
-	// Start the server on port 8080
 	fmt.Println("Server running on http://localhost:8080")
 	r.Run(":8080")
+}
+
+func initFirebase() {
+	// Provide the path to the service account JSON downloaded from Firebase Console
+	opt := option.WithAuthCredentialsFile(option.ServiceAccount, "Service_account_json/vitality-cafab-firebase-adminsdk-fbsvc-ccea64d136.json")
+
+	app, err := firebase.NewApp(context.Background(), nil, opt)
+	if err != nil {
+		log.Fatalf("Error initializing Firebase App: %v\n", err)
+	}
+
+	firebaseAuth, err = app.Auth(context.Background())
+	if err != nil {
+		log.Fatalf("Error getting Firebase Auth client: %v\n", err)
+	}
+
+	fmt.Println("Firebase initialized successfully!")
+}
+
+// AuthMiddleware intercepts incoming requests and verifies the Firebase ID Token
+func AuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 1. Get the Authorization header
+		authHeader := c.GetHeader("Authorization")
+		if authHeader == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing Authorization header"})
+			c.Abort()
+			return
+		}
+
+		// 2. Extract the token from the "Bearer <token>" format
+		parts := strings.Split(authHeader, " ")
+		if len(parts) != 2 || parts[0] != "Bearer" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid Authorization header format. Expected 'Bearer <token>'"})
+			c.Abort()
+			return
+		}
+		idToken := parts[1]
+
+		// 3. Verify the token using Firebase Admin SDK
+		token, err := firebaseAuth.VerifyIDToken(context.Background(), idToken)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token", "details": err.Error()})
+			c.Abort()
+			return
+		}
+
+		// 4. Token is valid! Set the user's UID in the context
+		// This allows your handler to know exactly which user is making the request
+		c.Set("UID", token.UID)
+
+		// 5. Proceed to the actual handler (handleImageUpload)
+		c.Next()
+	}
 }
 
 func handleImageUpload(c *gin.Context) {
@@ -92,7 +148,7 @@ func analyzeImageWithGroq(base64Image string) (string, error) {
 	llm, err := openai.New(
 		openai.WithToken(apiKey),
 		openai.WithBaseURL("https://api.groq.com/openai/v1"),
-		openai.WithModel("meta-llama/llama-4-scout-17b-16e-instruct"), // Target the Groq Vision model
+		openai.WithModel("meta-llama/llama-4-scout-17b-16e-instruct"),
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to init groq client: %v", err)
@@ -161,13 +217,12 @@ func analyzeImageWithGroq(base64Image string) (string, error) {
 	}`
 
 	// 3. Create a Multimodal Message (Text + Image URL Data URI)
-	// We pass the Base64 string using the standard data URI format required by OpenAI-compatible endpoints
 	imageURI := fmt.Sprintf("data:image/jpeg;base64,%s", base64Image)
 
-	message :=[]llms.MessageContent{
+	message := []llms.MessageContent{
 		{
 			Role: llms.ChatMessageTypeHuman,
-			Parts:[]llms.ContentPart{
+			Parts: []llms.ContentPart{
 				llms.TextContent{Text: promptText},
 				llms.ImageURLContent{URL: imageURI},
 			},
