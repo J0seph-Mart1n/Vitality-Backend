@@ -10,11 +10,14 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/auth"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/openai"
 	"google.golang.org/api/option"
@@ -22,6 +25,20 @@ import (
 
 // Global variable to hold the Firebase Auth Client
 var firebaseAuth *auth.Client
+var mongoClient *mongo.Client
+var labelCollection *mongo.Collection
+
+// Struct for saving to MongoDB
+type ScannedLabel struct {
+	UserID    string                 `bson:"user_id" json:"user_id"`
+	Data      map[string]interface{} `bson:"data" json:"data"`
+	CreatedAt time.Time              `bson:"created_at" json:"created_at"`
+}
+
+// Struct for receiving the save request from React Native
+type SaveScanRequest struct {
+	Data map[string]interface{} `json:"data" binding:"required"`
+}
 
 func main() {
 	err := godotenv.Load()
@@ -34,9 +51,13 @@ func main() {
 	// Initialize Firebase Auth
 	initFirebase()
 
+	initMongo()
+
 	r := gin.Default()
 
 	r.POST("/analyze-label", AuthMiddleware(), handleImageUpload)
+
+	r.POST("/save-scan", AuthMiddleware(), handleSaveScan)
 
 	fmt.Println("Server running on http://localhost:8080")
 	r.Run(":8080")
@@ -58,6 +79,29 @@ func initFirebase() {
 
 	fmt.Println("Firebase initialized successfully!")
 }
+
+func initMongo() {
+	mongoURI := os.Getenv("MONGO_URI")
+	if mongoURI == "" {
+		log.Fatal("MONGO_URI is not set in .env file")
+	}
+
+	clientOptions := options.Client().ApplyURI(mongoURI)
+	client, err := mongo.Connect(context.Background(), clientOptions)
+	if err != nil {
+		log.Fatalf("Error connecting to MongoDB: %v", err)
+	}
+
+	err = client.Ping(context.Background(), nil)
+	if err != nil {
+		log.Fatalf("Error pinging MongoDB: %v", err)
+	}
+
+	fmt.Println("Connected to MongoDB successfully!")
+	mongoClient = client
+	labelCollection = client.Database("scanHistory").Collection("labelScanReport")
+}
+
 
 // AuthMiddleware intercepts incoming requests and verifies the Firebase ID Token
 func AuthMiddleware() gin.HandlerFunc {
@@ -96,6 +140,8 @@ func AuthMiddleware() gin.HandlerFunc {
 	}
 }
 
+// ---- Handlers ----
+
 func handleImageUpload(c *gin.Context) {
 	// 1. Receive the image from the React Native app
 	file, _, err := c.Request.FormFile("image")
@@ -129,6 +175,42 @@ func handleImageUpload(c *gin.Context) {
 	// 5. Send the perfectly validated JSON back to the app!
 	c.JSON(http.StatusOK, parsedData)
 }
+
+func handleSaveScan(c *gin.Context) {
+	// 1. Verify User
+	uid, exists := c.Get("UID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// 2. Parse the incoming JSON data from the React Native app
+	var req SaveScanRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload format"})
+		return
+	}
+
+	// 3. Create the Database Document
+	newScan := ScannedLabel{
+		UserID:    uid.(string), // From Firebase Token
+		Data:      req.Data,     // The JSON data sent from the frontend
+		CreatedAt: time.Now(),
+	}
+
+	// 4. Save to MongoDB
+	_, err := labelCollection.InsertOne(context.Background(), newScan)
+	if err != nil {
+		log.Printf("Failed to save to MongoDB: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save scan to database"})
+		return
+	}
+
+	// 5. Success!
+	c.JSON(http.StatusOK, gin.H{"message": "Scan saved successfully!"})
+}
+
+// ---- Helper Functions ----
 
 // encodeImageToBase64 reads the multipart file and returns a base64 string
 func encodeImageToBase64(file io.Reader) (string, error) {
