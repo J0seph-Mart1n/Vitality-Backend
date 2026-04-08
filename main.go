@@ -16,12 +16,12 @@ import (
 	"firebase.google.com/go/v4/auth"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"github.com/tmc/langchaingo/llms"
+	"github.com/tmc/langchaingo/llms/openai"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/openai"
 	"google.golang.org/api/option"
 )
 
@@ -105,7 +105,6 @@ func initMongo() {
 	mongoClient = client
 	labelCollection = client.Database("scanHistory").Collection("labelScanReport")
 }
-
 
 // AuthMiddleware intercepts incoming requests and verifies the Firebase ID Token
 func AuthMiddleware() gin.HandlerFunc {
