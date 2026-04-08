@@ -16,6 +16,8 @@ import (
 	"firebase.google.com/go/v4/auth"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"github.com/tmc/langchaingo/llms"
@@ -30,6 +32,7 @@ var labelCollection *mongo.Collection
 
 // Struct for saving to MongoDB
 type ScannedLabel struct {
+	ID        primitive.ObjectID     `bson:"_id,omitempty" json:"id"`
 	UserID    string                 `bson:"user_id" json:"user_id"`
 	Data      map[string]interface{} `bson:"data" json:"data"`
 	CreatedAt time.Time              `bson:"created_at" json:"created_at"`
@@ -58,6 +61,7 @@ func main() {
 	r.POST("/analyze-label", AuthMiddleware(), handleImageUpload)
 
 	r.POST("/save-scan", AuthMiddleware(), handleSaveScan)
+	r.GET("/scan-history", AuthMiddleware(), handleGetScanHistory)
 
 	fmt.Println("Server running on http://localhost:8080")
 	r.Run(":8080")
@@ -210,6 +214,36 @@ func handleSaveScan(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Scan saved successfully!"})
 }
 
+func handleGetScanHistory(c *gin.Context) {
+	uid, exists := c.Get("UID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	// Filter by current user
+	filter := bson.M{"user_id": uid.(string)}
+	// Sort by created_at descending (newest first)
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	cursor, err := labelCollection.Find(context.Background(), filter, opts)
+	if err != nil {
+		log.Printf("Error fetching scan history: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch scan history"})
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var scans []ScannedLabel = make([]ScannedLabel, 0)
+	if err = cursor.All(context.Background(), &scans); err != nil {
+		log.Printf("Error decoding scan history: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode scan history"})
+		return
+	}
+
+	c.JSON(http.StatusOK, scans)
+}
+
 // ---- Helper Functions ----
 
 // encodeImageToBase64 reads the multipart file and returns a base64 string
@@ -253,9 +287,11 @@ func analyzeImageWithGroq(base64Image string) (string, error) {
 	9. If you are able to provide more or less nutritional facts than listed in the JSON object, provide them using the proper JSON object format.
 	10. Provide a health score from 0-100 based on the nutritional facts and analysis made from the food label. Also provide a sentence regarding the health score.
 	11. All the nutritional facts in the image label should be in the JSON object in the same format as the image label.
+	12. Give a title of the food item.
 	
 	Use the following JSON structure if the image follows 1-4 instructions:
 	{
+	"title": "The title of the food item",
 	"summary": "Short 1 sentence summary of the food item",
 	"benefits": 
 		{
