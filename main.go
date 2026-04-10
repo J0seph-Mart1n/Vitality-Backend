@@ -29,6 +29,7 @@ import (
 var firebaseAuth *auth.Client
 var mongoClient *mongo.Client
 var labelCollection *mongo.Collection
+var dailyLogCollection *mongo.Collection
 
 // Struct for saving to MongoDB
 type ScannedLabel struct {
@@ -41,6 +42,33 @@ type ScannedLabel struct {
 // Struct for receiving the save request from React Native
 type SaveScanRequest struct {
 	Data map[string]interface{} `json:"data" binding:"required"`
+}
+
+type EstimateNutritionRequest struct {
+	FoodName         string                 `json:"food_name" binding:"required"`
+	NutritionalFacts map[string]interface{} `json:"nutritional_facts,omitempty"`
+	ConsumedAmount   string                 `json:"consumed_amount" binding:"required"`
+}
+
+type DailyLogEntry struct {
+	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	UserID    string             `bson:"user_id" json:"user_id"`
+	FoodName  string             `bson:"food_name" json:"food_name"`
+	Quantity  string             `bson:"quantity" json:"quantity"`
+	Unit      string             `bson:"unit" json:"unit"`
+	Calories  string             `bson:"calories" json:"calories"`
+	Protein   string             `bson:"protein" json:"protein"`
+	Carbs     string             `bson:"carbs" json:"carbs"`
+	CreatedAt time.Time          `bson:"created_at" json:"created_at"`
+}
+
+type SaveDailyLogRequest struct {
+	FoodName string `json:"food_name" binding:"required"`
+	Quantity string `json:"quantity" binding:"required"`
+	Unit     string `json:"unit" binding:"required"`
+	Calories string `json:"calories" binding:"required"`
+	Protein  string `json:"protein" binding:"required"`
+	Carbs    string `json:"carbs" binding:"required"`
 }
 
 func main() {
@@ -59,9 +87,13 @@ func main() {
 	r := gin.Default()
 
 	r.POST("/analyze-label", AuthMiddleware(), handleImageUpload)
+	r.POST("/estimate-nutrition", AuthMiddleware(), handleEstimateNutrition)
 
 	r.POST("/save-scan", AuthMiddleware(), handleSaveScan)
 	r.GET("/scan-history", AuthMiddleware(), handleGetScanHistory)
+	
+	r.POST("/daily-log", AuthMiddleware(), handleCreateDailyLog)
+	r.GET("/daily-log", AuthMiddleware(), handleGetDailyLogs)
 
 	fmt.Println("Server running on http://localhost:8080")
 	r.Run(":8080")
@@ -104,6 +136,7 @@ func initMongo() {
 	fmt.Println("Connected to MongoDB successfully!")
 	mongoClient = client
 	labelCollection = client.Database("scanHistory").Collection("labelScanReport")
+	dailyLogCollection = client.Database("scanHistory").Collection("dailyLogs")
 }
 
 // AuthMiddleware intercepts incoming requests and verifies the Firebase ID Token
@@ -179,6 +212,28 @@ func handleImageUpload(c *gin.Context) {
 	c.JSON(http.StatusOK, parsedData)
 }
 
+func handleEstimateNutrition(c *gin.Context) {
+	var req EstimateNutritionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload format"})
+		return
+	}
+
+	analysisJSON, err := estimateNutritionWithGroq(req.FoodName, req.NutritionalFacts, req.ConsumedAmount)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to estimate nutrition: " + err.Error()})
+		return
+	}
+
+	var parsedData map[string]interface{}
+	if err := json.Unmarshal([]byte(analysisJSON), &parsedData); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "LLM returned invalid JSON format", "raw_output": analysisJSON})
+		return
+	}
+
+	c.JSON(http.StatusOK, parsedData)
+}
+
 func handleSaveScan(c *gin.Context) {
 	// 1. Verify User
 	uid, exists := c.Get("UID")
@@ -243,6 +298,68 @@ func handleGetScanHistory(c *gin.Context) {
 	c.JSON(http.StatusOK, scans)
 }
 
+func handleCreateDailyLog(c *gin.Context) {
+	uid, exists := c.Get("UID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	var req SaveDailyLogRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request payload format"})
+		return
+	}
+
+	newLog := DailyLogEntry{
+		UserID:    uid.(string),
+		FoodName:  req.FoodName,
+		Quantity:  req.Quantity,
+		Unit:      req.Unit,
+		Calories:  req.Calories,
+		Protein:   req.Protein,
+		Carbs:     req.Carbs,
+		CreatedAt: time.Now(),
+	}
+
+	_, err := dailyLogCollection.InsertOne(context.Background(), newLog)
+	if err != nil {
+		log.Printf("Failed to save to MongoDB: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save daily log to database"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Daily log saved successfully!"})
+}
+
+func handleGetDailyLogs(c *gin.Context) {
+	uid, exists := c.Get("UID")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not authenticated"})
+		return
+	}
+
+	filter := bson.M{"user_id": uid.(string)}
+	opts := options.Find().SetSort(bson.D{{Key: "created_at", Value: -1}})
+
+	cursor, err := dailyLogCollection.Find(context.Background(), filter, opts)
+	if err != nil {
+		log.Printf("Error fetching daily logs: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch daily logs"})
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var logs []DailyLogEntry = make([]DailyLogEntry, 0)
+	if err = cursor.All(context.Background(), &logs); err != nil {
+		log.Printf("Error decoding daily logs: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decode daily logs"})
+		return
+	}
+
+	c.JSON(http.StatusOK, logs)
+}
+
 // ---- Helper Functions ----
 
 // encodeImageToBase64 reads the multipart file and returns a base64 string
@@ -287,6 +404,7 @@ func analyzeImageWithGroq(base64Image string) (string, error) {
 	10. Provide a health score from 0-100 based on the nutritional facts and analysis made from the food label. Also provide a sentence regarding the health score.
 	11. All the nutritional facts in the image label should be in the JSON object in the same format as the image label.
 	12. Give a title of the food item.
+	13. Find the Serving Size in the image label and provide it in the JSON object. The calories and other details displayed should be based on the serviing size.
 	
 	Use the following JSON structure if the image follows 1-4 instructions:
 	{
@@ -306,6 +424,7 @@ func analyzeImageWithGroq(base64Image string) (string, error) {
 		},
 	"nutritional_facts":
 		{
+		"Serving Size": "Amount in grams or ml based on the label"
 		"calories":"Amount in kcal (Ex. 200 kcal)",
 		"total_fat":"Amount in g (Ex. 10g)",
 		"saturated_fat":"Amount in g (Ex. 5g)",
@@ -357,6 +476,67 @@ func analyzeImageWithGroq(base64Image string) (string, error) {
 	}
 
 	// 5. Extract just the JSON object from the LLM response
+	completion := resp.Choices[0].Content
+	startIndex := strings.Index(completion, "{")
+	endIndex := strings.LastIndex(completion, "}")
+	if startIndex != -1 && endIndex != -1 && endIndex > startIndex {
+		cleanedJSON := completion[startIndex : endIndex+1]
+		return cleanedJSON, nil
+	}
+
+	return "", fmt.Errorf("LLM did not return a valid JSON object: %s", completion)
+}
+
+// estimateNutritionWithGroq uses the same LLM but with a text-only prompt to estimate macros
+func estimateNutritionWithGroq(foodName string, facts map[string]interface{}, consumedAmount string) (string, error) {
+	ctx := context.Background()
+	apiKey := os.Getenv("GROQ_API_KEY")
+
+	// Reuse the exact same LLM client configuration
+	llm, err := openai.New(
+		openai.WithToken(apiKey),
+		openai.WithBaseURL("https://api.groq.com/openai/v1"),
+		openai.WithModel("meta-llama/llama-4-scout-17b-16e-instruct"),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to init groq client: %v", err)
+	}
+
+	var factsContext string
+	if len(facts) > 0 {
+		factsJSON, _ := json.MarshalIndent(facts, "", "  ")
+		factsContext = fmt.Sprintf("\nHere are the exact nutritional facts from the product label:\n%s\nPlease base your estimation strictly on these facts (convert the serving accurately to match the consumed amount).\n", string(factsJSON))
+	}
+
+	promptText := fmt.Sprintf(`You are an expert nutritionist database. 
+	I need the exact nutritional estimation strictly of serving %s for the following food/drink: "%s".%s
+	Do not include any pleasantries or markdown formatting blocks.
+	Output ONLY a raw, valid JSON object with the following structure:
+	{
+		"calories": "250",
+		"protein": "12.5",
+		"carbs": "33.2"
+	}
+	Ensure the values are strictly numbers represented as strings.`, consumedAmount, foodName, factsContext)
+
+	message := []llms.MessageContent{
+		{
+			Role: llms.ChatMessageTypeHuman,
+			Parts: []llms.ContentPart{
+				llms.TextContent{Text: promptText},
+			},
+		},
+	}
+
+	resp, err := llm.GenerateContent(ctx, message)
+	if err != nil {
+		return "", fmt.Errorf("llm generation failed: %v", err)
+	}
+
+	if len(resp.Choices) == 0 {
+		return "", fmt.Errorf("empty response from LLM")
+	}
+
 	completion := resp.Choices[0].Content
 	startIndex := strings.Index(completion, "{")
 	endIndex := strings.LastIndex(completion, "}")
