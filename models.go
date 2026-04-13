@@ -23,6 +23,9 @@ type EstimateNutritionRequest struct {
 	FoodName         string                 `json:"food_name" binding:"required"`
 	NutritionalFacts map[string]interface{} `json:"nutritional_facts,omitempty"`
 	ConsumedAmount   string                 `json:"consumed_amount" binding:"required"`
+	Calories         string                 `json:"calories,omitempty"`
+	Protein          string                 `json:"protein,omitempty"`
+	Carbs            string                 `json:"carbs,omitempty"`
 }
 
 type DailyLogEntry struct {

@@ -53,7 +53,7 @@ func handleEstimateNutrition(c *gin.Context) {
 		return
 	}
 
-	analysisJSON, err := estimateNutritionWithGroq(req.FoodName, req.NutritionalFacts, req.ConsumedAmount)
+	analysisJSON, err := estimateNutritionWithGroq(req.FoodName, req.NutritionalFacts, req.ConsumedAmount, req.Calories, req.Protein, req.Carbs)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to estimate nutrition: " + err.Error()})
 		return

@@ -139,7 +139,7 @@ func analyzeImageWithGroq(base64Image string) (string, error) {
 }
 
 // estimateNutritionWithGroq uses the same LLM but with a text-only prompt to estimate macros
-func estimateNutritionWithGroq(foodName string, facts map[string]interface{}, consumedAmount string) (string, error) {
+func estimateNutritionWithGroq(foodName string, facts map[string]interface{}, consumedAmount string, calories string, protein string, carbs string) (string, error) {
 	ctx := context.Background()
 	apiKey := os.Getenv("GROQ_API_KEY")
 
@@ -159,8 +159,23 @@ func estimateNutritionWithGroq(foodName string, facts map[string]interface{}, co
 		factsContext = fmt.Sprintf("\nHere are the exact nutritional facts from the product label:\n%s\nPlease base your estimation strictly on these facts (convert the serving accurately to match the consumed amount).\n", string(factsJSON))
 	}
 
+	var userMacroContext string
+	if calories != "" || protein != "" || carbs != "" {
+		userMacroContext = "\nThe user has also provided the following known values. Give the same values as the user provided and adjust the values if not provided:"
+		if calories != "" {
+			userMacroContext += fmt.Sprintf(" Calories: %s.", calories)
+		}
+		if protein != "" {
+			userMacroContext += fmt.Sprintf(" Protein: %sg.", protein)
+		}
+		if carbs != "" {
+			userMacroContext += fmt.Sprintf(" Carbs: %sg.", carbs)
+		}
+		userMacroContext += "\n"
+	}
+
 	promptText := fmt.Sprintf(`You are an expert nutritionist database. 
-	I need the exact nutritional estimation strictly of serving %s for the following food/drink: "%s".%s
+	I need the exact nutritional estimation strictly of serving %s for the following food/drink: "%s".%s%s
 	Do not include any pleasantries or markdown formatting blocks.
 	Output ONLY a raw, valid JSON object with the following structure:
 	{
@@ -168,7 +183,7 @@ func estimateNutritionWithGroq(foodName string, facts map[string]interface{}, co
 		"protein": "12.5",
 		"carbs": "33.2"
 	}
-	Ensure the values are strictly numbers represented as strings.`, consumedAmount, foodName, factsContext)
+	Ensure the values are strictly numbers represented as strings.`, consumedAmount, foodName, factsContext, userMacroContext)
 
 	message := []llms.MessageContent{
 		{
